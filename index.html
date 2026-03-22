@@ -873,9 +873,6 @@ function drawDashboard(c){
   // Utilidad y ventas por vendedor
   const vendorProfit={};
   vendors.forEach(v=>{vendorProfit[v.id]={rev:0,profit:0,units:0};});
-  // Productos por vendedor (necesario en el template)
-  const vProds={};
-  prods.forEach(p=>{vProds[p.vendorId]=(vProds[p.vendorId]||0)+1;});
   orders.forEach(o=>(o.items||[]).forEach(i=>{
     const p=prods.find(x=>x.sku===i.sku);
     if(p&&p.vendorId){
@@ -916,11 +913,6 @@ function drawDashboard(c){
   c.innerHTML=`
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:22px">
     <div class="a-section-title" style="margin-bottom:0">📊 DASHBOARD</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="a-btn a-btn-primary a-btn-sm" onclick="exportAllExcel()">📊 Descargar Excel completo</button>
-    </div>
-  </div>
-  <div style="display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-bottom:18px">
     <div class="period-bar" style="margin-bottom:0">
       <button class="period-btn ${dashPeriod===7?'active':''}" onclick="dashPeriod=7;drawDashboard(document.getElementById('admin-content'))">7 días</button>
       <button class="period-btn ${dashPeriod===30?'active':''}" onclick="dashPeriod=30;drawDashboard(document.getElementById('admin-content'))">30 días</button>
@@ -1350,52 +1342,6 @@ function clearAllTestData(){
 }
 
 // ═══ EXPORTS (solo en admin) ═══
-function exportAllExcel(){
-  // Descarga 3 CSVs separados: Pedidos, Productos, Vendedores
-  // Cada uno abre como una hoja en Excel
-  setTimeout(()=>exportOrdersCSV(),0);
-  setTimeout(()=>exportProductsCSV(),600);
-  setTimeout(()=>exportVendorsCSV(),1200);
-  showToast('Descargando 3 archivos CSV — uno por hoja 📊');
-}
-
-function exportVendorsCSV(){
-  const vendors=DB.get('vendors')||[];
-  const orders=DB.get('orders')||[];
-  const prods=DB.get('products')||[];
-  if(!vendors.length){showToast('No hay vendedores',true);return}
-  // Calculate vendor stats
-  const vStats={};
-  vendors.forEach(v=>{vStats[v.id]={rev:0,units:0,profit:0,orders:0}});
-  orders.forEach(o=>{
-    const vIds=new Set();
-    (o.items||[]).forEach(i=>{
-      const p=prods.find(x=>x.sku===i.sku);
-      if(p&&p.vendorId){
-        if(!vStats[p.vendorId])vStats[p.vendorId]={rev:0,units:0,profit:0,orders:0};
-        vStats[p.vendorId].rev+=i.price*i.qty;
-        vStats[p.vendorId].units+=i.qty;
-        if(p.costPrice)vStats[p.vendorId].profit+=(p.price-p.costPrice)*i.qty;
-        vIds.add(p.vendorId);
-      }
-    });
-    vIds.forEach(vid=>{if(vStats[vid])vStats[vid].orders++;});
-  });
-  const rows=[['Nombre','Teléfono','WhatsApp','Correo','Ventas Totales (₡)','Utilidad (₡)','Pedidos','Unidades','Productos activos']];
-  vendors.forEach(v=>{
-    const s=vStats[v.id]||{rev:0,units:0,profit:0,orders:0};
-    const pCount=(DB.get('products')||[]).filter(p=>p.vendorId===v.id).length;
-    rows.push([v.name,v.phone||'',v.whatsapp||'',v.contact||'',s.rev,s.profit,s.orders,s.units,pCount]);
-  });
-  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('
-');
-  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');a.href=url;
-  a.download='allin-vendedores-'+new Date().toISOString().slice(0,10)+'.csv';
-  a.click();URL.revokeObjectURL(url);
-}
-
 function exportOrdersCSV(){
   const orders=DB.get('orders')||[],ps=DB.get('products')||[];
   if(!orders.length){showToast('No hay pedidos para exportar',true);return}
@@ -1416,14 +1362,8 @@ function exportOrdersCSV(){
 function exportProductsCSV(){
   const prods=DB.get('products')||[];
   if(!prods.length){showToast('No hay productos',true);return}
-  const rows=[['SKU','Nombre','Categoría','Vendedor','Precio Costo (₡)','Precio Venta (₡)','Ganancia (₡)','Margen %','Stock','Descripción','Agotado']];
-  prods.forEach(p=>{
-    const cost=p.costPrice||0;
-    const gain=cost>0?p.price-cost:'-';
-    const margin=cost>0&&p.price>0?Math.round(((p.price-cost)/p.price)*100)+'%':'-';
-    const stock=p.stock!==null&&p.stock!==undefined?p.stock:'Ilimitado';
-    rows.push([p.sku||'',p.name,catName(p.category),vendorName(p.vendorId),cost||'-',p.price,gain,margin,stock,p.description||'',p.soldout?'Sí':'No']);
-  });
+  const rows=[['SKU','Nombre','Categoría','Vendedor','Precio (₡)','Descripción','Agotado']];
+  prods.forEach(p=>rows.push([p.sku||'',p.name,catName(p.category),vendorName(p.vendorId),p.price,p.description||'',p.soldout?'Sí':'No']));
   const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='allin-productos-'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url);
