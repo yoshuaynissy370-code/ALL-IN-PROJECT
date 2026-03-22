@@ -631,7 +631,10 @@ function renderProds(){
         ${vn?`<div class="product-vendor" style="color:${vc}">● ${vn}</div>`:''}
         ${p.description?`<div class="product-desc">${p.description}</div>`:''}
         <div class="product-footer">
-          <div class="product-price">${fmt(p.price)}</div>
+          <div>
+            <div class="product-price">${fmt(p.price)}</div>
+            ${p.stock!==null&&p.stock!==undefined&&p.stock<=5&&p.stock>0?`<div style="font-size:10px;color:var(--red);font-weight:700;margin-top:2px">⚠️ Últimas ${p.stock} unidades</div>`:''}
+          </div>
           ${!p.soldout?`<button class="add-btn" onclick="addCart('${p.id}')">+ Añadir</button>`:`<span style="font-size:12px;color:var(--muted);font-weight:600">Agotado</span>`}
         </div>
       </div>
@@ -644,12 +647,31 @@ function doSearch(q){searchQ=q.trim();renderProds()}
 
 // ═══ CART ═══
 function addCart(id){
+  const ps=DB.get('products')||[];
+  const prod=ps.find(x=>x.id===id);
+  if(!prod)return;
   const ex=cart.find(x=>x.id===id);
+  const currentQty=ex?ex.qty:0;
+  // Verificar stock
+  if(prod.stock!==null&&prod.stock!==undefined&&currentQty>=prod.stock){
+    showToast(`Solo hay ${prod.stock} unidades disponibles`,true);return;
+  }
   if(ex)ex.qty++;else cart.push({id,qty:1});
   updateBadge();renderCartItems();showToast('Añadido al carrito 🛒');
 }
 function removeCart(id){cart=cart.filter(x=>x.id!==id);updateBadge();renderCartItems()}
-function changeQty(id,d){const it=cart.find(x=>x.id===id);if(!it)return;it.qty+=d;if(it.qty<=0)removeCart(id);else{updateBadge();renderCartItems()}}
+function changeQty(id,d){
+  const it=cart.find(x=>x.id===id);if(!it)return;
+  if(d>0){
+    const ps=DB.get('products')||[];
+    const prod=ps.find(x=>x.id===id);
+    if(prod&&prod.stock!==null&&prod.stock!==undefined&&it.qty>=prod.stock){
+      showToast(`Solo hay ${prod.stock} unidades disponibles`,true);return;
+    }
+  }
+  it.qty+=d;
+  if(it.qty<=0)removeCart(id);else{updateBadge();renderCartItems()}
+}
 function clearCart(){if(!cart.length)return;if(confirm('¿Vaciar el carrito?')){cart=[];updateBadge();renderCartItems();showToast('Carrito vaciado')}}
 function renderCartItems(){
   const ps=DB.get('products')||[];
@@ -753,9 +775,30 @@ function submitOrder(){
   const orders=DB.get('orders')||[];
   orders.push({id:oid,customer:ckCustomer.name,phone:ckCustomer.phone,addr:ckCustomer.addr,items,total:cartTotal(),paymentMethod:ckPay,comprobante:ckComp?'[adjunto]':'',timestamp:new Date().toISOString()});
   DB.set('orders',orders);
-  const msg=encodeURIComponent(`¡Hola All IN! 🛒\n\n👤 *Cliente:* ${ckCustomer.name}\n📞 *Tel:* ${ckCustomer.phone}${ckCustomer.addr?'\n📍 *Dirección:* '+ckCustomer.addr:''}\n\n📦 *Pedido ${oid}:*\n${lines.join('\n')}\n\n💰 *TOTAL: ${fmt(cartTotal())}*\n💳 *Pago:* ${payN[ckPay]}${ckComp?'\n📎 Adjunto comprobante de pago':''}.\n\n_All IN Store_ 🛍️`);
+  // Descontar stock
+  let prods2=DB.get('products')||[];
+  items.forEach(i=>{
+    const idx=prods2.findIndex(p=>p.id===i.productId);
+    if(idx>-1&&prods2[idx].stock!==undefined&&prods2[idx].stock!==null){
+      prods2[idx].stock=Math.max(0,prods2[idx].stock-i.qty);
+      if(prods2[idx].stock===0)prods2[idx].soldout=true;
+    }
+  });
+  DB.set('products',prods2);renderProds();
+  // WhatsApp routing: 1 vendedor → su WA; varios → WA principal
+  const allVendors=DB.get('vendors')||[];
+  const mainV=allVendors.find(v=>v.id==='v_owner')||allVendors[0];
+  const mainWA=(mainV?.whatsapp||mainV?.phone||'50662189208').replace(/[^0-9]/g,'');
+  const orderVendorIds=[...new Set(items.map(i=>i.vendorId).filter(Boolean))];
+  let targetWA=mainWA,targetName='All IN';
+  if(orderVendorIds.length===1){
+    const ov=allVendors.find(v=>v.id===orderVendorIds[0]);
+    const ovWA=(ov?.whatsapp||ov?.phone||'').replace(/[^0-9]/g,'');
+    if(ovWA&&ovWA!==mainWA){targetWA=ovWA;targetName=ov.name;}
+  }
+  const msg=encodeURIComponent(`¡Hola ${targetName}! 🛒\n\n👤 *Cliente:* ${ckCustomer.name}\n📞 *Tel:* ${ckCustomer.phone}${ckCustomer.addr?'\n📍 *Dirección:* '+ckCustomer.addr:''}\n\n📦 *Pedido ${oid}:*\n${lines.join('\n')}\n\n💰 *TOTAL: ${fmt(cartTotal())}*\n💳 *Pago:* ${payN[ckPay]}${ckComp?'\n📎 Adjunto comprobante de pago':''}.\n\n_All IN Store_ 🛍️`);
   const comp=ckComp;cart=[];updateBadge();
-  window.open(`https://wa.me/50662189208?text=${msg}`,'_blank');closeCheckout();
+  window.open(`https://wa.me/${targetWA}?text=${msg}`,'_blank');closeCheckout();
   setTimeout(()=>{
     document.getElementById('checkout-overlay').classList.add('open');document.body.style.overflow='hidden';
     document.getElementById('checkout-modal').innerHTML=`<div id="checkout-success">
@@ -820,6 +863,25 @@ function drawDashboard(c){
   const total=orders.reduce((s,o)=>s+o.total,0);
   const avgOrder=orders.length?total/orders.length:0;
   const uniqueClients=new Set(orders.map(o=>o.phone)).size;
+  // Cálculo de utilidad neta
+  let totalCost=0,totalProfit=0;
+  orders.forEach(o=>(o.items||[]).forEach(i=>{
+    const p=prods.find(x=>x.sku===i.sku);
+    if(p&&p.costPrice){totalCost+=p.costPrice*i.qty;totalProfit+=(p.price-p.costPrice)*i.qty;}
+  }));
+  const avgMargin=total>0&&totalProfit>0?Math.round((totalProfit/total)*100):0;
+  // Utilidad y ventas por vendedor
+  const vendorProfit={};
+  vendors.forEach(v=>{vendorProfit[v.id]={rev:0,profit:0,units:0};});
+  orders.forEach(o=>(o.items||[]).forEach(i=>{
+    const p=prods.find(x=>x.sku===i.sku);
+    if(p&&p.vendorId){
+      if(!vendorProfit[p.vendorId])vendorProfit[p.vendorId]={rev:0,profit:0,units:0};
+      vendorProfit[p.vendorId].rev+=i.price*i.qty;
+      vendorProfit[p.vendorId].units+=i.qty;
+      if(p.costPrice)vendorProfit[p.vendorId].profit+=(p.price-p.costPrice)*i.qty;
+    }
+  }));
 
   // Sales per day (last N days)
   const dayMap={};
@@ -860,8 +922,10 @@ function drawDashboard(c){
   </div>
 
   <div class="kpi-grid">
-    <div class="kpi k1"><div class="kpi-lbl">Ingresos</div><div class="kpi-val" style="font-size:${total>999999?'22px':'32px'}">${fmt(total)}</div><div class="kpi-sub">${orders.length} pedido${orders.length!==1?'s':''}</div></div>
-    <div class="kpi k2"><div class="kpi-lbl">Ticket promedio</div><div class="kpi-val" style="font-size:24px">${fmt(Math.round(avgOrder))}</div><div class="kpi-sub">por pedido</div></div>
+    <div class="kpi k1"><div class="kpi-lbl">Ingresos totales</div><div class="kpi-val" style="font-size:${total>999999?'20px':'28px'}">${fmt(total)}</div><div class="kpi-sub">${orders.length} pedido${orders.length!==1?'s':''}</div></div>
+    <div class="kpi k2"><div class="kpi-lbl">Utilidad neta</div><div class="kpi-val" style="font-size:${totalProfit>999999?'20px':'28px'};color:var(--green)">${totalProfit>0?fmt(totalProfit):'—'}</div><div class="kpi-sub">${totalCost>0?'Costo: '+fmt(totalCost):'Agrega precio costo'}</div></div>
+    <div class="kpi k3"><div class="kpi-lbl">Margen promedio</div><div class="kpi-val" style="color:${avgMargin>=40?'var(--green)':avgMargin>=25?'var(--accent)':avgMargin>0?'var(--red)':'var(--muted)'}">${avgMargin>0?avgMargin+'%':'—'}</div><div class="kpi-sub">${avgMargin>=40?'🟢 Excelente':avgMargin>=25?'🟡 Aceptable':avgMargin>0?'🔴 Bajo':'Sin datos de costo'}</div></div>
+    <div class="kpi k4"><div class="kpi-lbl">Ticket promedio</div><div class="kpi-val" style="font-size:24px">${fmt(Math.round(avgOrder))}</div><div class="kpi-sub">por pedido</div></div>
     <div class="kpi k3"><div class="kpi-lbl">Clientes únicos</div><div class="kpi-val">${uniqueClients}</div><div class="kpi-sub">por teléfono</div></div>
     <div class="kpi k4"><div class="kpi-lbl">Productos activos</div><div class="kpi-val">${prods.filter(p=>!p.soldout).length}</div><div class="kpi-sub">de ${prods.length} total</div></div>
     <div class="kpi k5"><div class="kpi-lbl">Vendedores</div><div class="kpi-val">${vendors.length}</div><div class="kpi-sub">en plataforma</div></div>
@@ -897,22 +961,34 @@ function drawDashboard(c){
     </table>
   </div>`:''}
 
-  ${Object.keys(vendorSales).length>1?`
-  <div class="chart-card">
-    <h4>Ingresos por vendedor</h4>
-    <table class="dash-table">
-      <tr><th>Vendedor</th><th>Ingresos</th><th>%</th></tr>
-      ${Object.entries(vendorSales).sort((a,b)=>b[1]-a[1]).map(([vn,rev])=>{
-        const v=(DB.get('vendors')||[]).find(x=>x.name===vn);
-        const pct=total?Math.round(rev/total*100):0;
-        return`<tr>
-          <td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${v?v.color:'#888'};margin-right:8px"></span>${vn}</td>
-          <td style="color:var(--accent);font-family:'Bebas Neue',sans-serif;font-size:18px">${fmt(rev)}</td>
-          <td><div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:6px;background:var(--border);border-radius:3px"><div style="width:${pct}%;height:6px;background:${v?v.color:'var(--accent)'};border-radius:3px"></div></div><span style="font-size:11px;color:var(--muted);min-width:30px">${pct}%</span></div></td>
-        </tr>`;
-      }).join('')}
-    </table>
-  </div>`:''}`;
+  <div class="chart-card" style="margin-bottom:18px">
+    <h4>Ventas y utilidad por vendedor</h4>
+    ${vendors.length===0?'<p style="color:var(--muted);font-size:13px">No hay vendedores aún.</p>':
+    vendors.map(v=>{
+      const vd=vendorProfit[v.id]||{rev:0,profit:0,units:0};
+      const pct=total>0?Math.round(vd.rev/total*100):0;
+      const margin=vd.rev>0&&vd.profit>0?Math.round((vd.profit/vd.rev)*100):0;
+      return`<div style="margin-bottom:18px;padding-bottom:18px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="width:12px;height:12px;border-radius:50%;background:${v.color};display:inline-block;flex-shrink:0"></span>
+            <span style="font-weight:700;font-size:14px">${v.name}</span>
+            ${v.whatsapp?`<a href="https://wa.me/${v.whatsapp}" target="_blank" style="font-size:11px;color:#25d366;font-weight:600">💬</a>`:''}
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap">
+            <div style="text-align:center"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Ventas</div><div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--accent)">${fmt(vd.rev)}</div></div>
+            <div style="text-align:center"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Unidades</div><div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--blue)">${vd.units}</div></div>
+            ${vd.profit>0?`<div style="text-align:center"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Utilidad</div><div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--green)">${fmt(vd.profit)}</div></div>`:''}
+            ${margin>0?`<div style="text-align:center"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Margen</div><div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:${margin>=40?'var(--green)':margin>=25?'var(--accent)':'var(--red)'}">${margin}%</div></div>`:''}
+          </div>
+        </div>
+        <div style="height:8px;background:var(--border);border-radius:4px;overflow:hidden">
+          <div style="width:${pct}%;height:8px;background:${v.color};border-radius:4px"></div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">${pct}% de ventas totales · ${vProds[v.id]||0} producto${(vProds[v.id]||0)!==1?'s':''}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
 
   // Draw charts
   setTimeout(()=>{
@@ -955,7 +1031,26 @@ function drawAProducts(c){
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Nombre</label><input type="text" id="pf-name" class="form-input" placeholder="Ej: Gorra NY Yankees" value="${ep?ep.name:''}"/></div>
-      <div class="form-group"><label class="form-label">Precio (₡)</label><input type="number" id="pf-price" class="form-input" placeholder="15000" value="${ep?ep.price:''}"/></div>
+      <div class="form-group">
+        <label class="form-label">Stock <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);font-size:10px">unidades disponibles</span></label>
+        <input type="number" id="pf-stock" class="form-input" placeholder="0 = sin límite" min="0" value="${ep&&ep.stock!==undefined&&ep.stock!==null?ep.stock:''}" oninput="calcMargin()"/>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Precio costo (₡) <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);font-size:10px">solo visible en admin</span></label>
+        <input type="number" id="pf-cost" class="form-input" placeholder="0" min="0" value="${ep?ep.costPrice||'':''}" oninput="calcMargin()"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Precio venta (₡)</label>
+        <input type="number" id="pf-price" class="form-input" placeholder="15000" value="${ep?ep.price:''}" oninput="calcMargin()"/>
+      </div>
+    </div>
+    <div id="margin-box" style="display:none;background:var(--card2);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--r-sm);padding:12px 16px;margin-bottom:14px;flex-wrap:wrap;gap:16px">
+      <span style="font-size:13px;color:var(--muted)">Ganancia: <strong id="m-gain" style="color:var(--green)"></strong></span>
+      <span style="font-size:13px;color:var(--muted)">Margen: <strong id="m-pct" style="color:var(--accent)"></strong></span>
+      <span style="font-size:13px;color:var(--muted)">Precio sugerido: <strong id="m-sug" style="color:var(--blue)"></strong></span>
+      <span id="m-semaforo" style="font-size:12px"></span>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Categoría</label><select id="pf-cat" class="form-input">${catOpts}</select></div>
@@ -984,7 +1079,11 @@ function drawAProducts(c){
       <div class="a-item-info">
         <div class="a-item-name">${p.name}${p.soldout?' <span style="font-size:10px;color:var(--red);font-weight:700">[AGOTADO]</span>':''}</div>
         <div class="a-item-sku">SKU: ${p.sku||'—'}</div>
-        <div class="a-item-meta">${catName(p.category)}${vn?` · <span style="color:${vc}">${vn}</span>`:''}</div>
+        <div class="a-item-meta">${catName(p.category)}${vn?' · <span style="color:'+vc+'">'+vn+'</span>':''}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;display:flex;gap:10px;flex-wrap:wrap">
+          ${p.stock!==null&&p.stock!==undefined?`<span style="color:${p.stock<=3?'var(--red)':p.stock<=10?'var(--accent)':'var(--green)'}">📦 Stock: ${p.stock}</span>`:'<span>📦 Stock: ilimitado</span>'}
+          ${p.costPrice?`<span>Costo: ${fmt(p.costPrice)}</span><span style="color:var(--green)">Ganancia: ${fmt(p.price-p.costPrice)} (${Math.round(((p.price-p.costPrice)/p.price)*100)}%)</span>`:''}
+        </div>
       </div>
       <span class="a-item-price">${fmt(p.price)}</span>
       <div class="a-actions">
@@ -994,12 +1093,35 @@ function drawAProducts(c){
     </div>`;}).join(''):'<p style="color:var(--muted);font-size:14px">No hay productos aún.</p>'}</div>`;
   if(ep){document.getElementById('pf-cat').value=ep.category;document.getElementById('pf-vendor').value=ep.vendorId||''}
 }
+function calcMargin(){
+  const cost=parseInt(document.getElementById('pf-cost')?.value)||0;
+  const price=parseInt(document.getElementById('pf-price')?.value)||0;
+  const mb=document.getElementById('margin-box');
+  if(!mb)return;
+  if(cost>0&&price>0){
+    const gain=price-cost;
+    const pct=Math.round((gain/price)*100);
+    document.getElementById('m-gain').textContent=fmt(gain)+' por unidad';
+    document.getElementById('m-pct').textContent=pct+'%';
+    // Precio sugerido: mínimo 30% de margen
+    const sug=Math.ceil(cost/0.7/100)*100;
+    document.getElementById('m-sug').textContent=price<sug?fmt(sug)+' (mín. 30% margen)':'✓ Precio OK';
+    const s=document.getElementById('m-semaforo');
+    if(pct>=40){document.getElementById('m-pct').style.color='var(--green)';s.textContent='🟢 Excelente';}
+    else if(pct>=25){document.getElementById('m-pct').style.color='var(--accent)';s.textContent='🟡 Aceptable';}
+    else if(pct>0){document.getElementById('m-pct').style.color='var(--red)';s.textContent='🔴 Margen bajo';}
+    mb.style.display='flex';
+  }else{mb.style.display='none';}
+}
 function prvImg(){const u=document.getElementById('pf-imgurl').value,pr=document.getElementById('pf-imgprev');if(u){pr.src=u;pr.style.display='block'}else pr.style.display='none'}
 function upImg(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=new Image();img.onload=()=>{const MAX=500;let w=img.width,h=img.height;if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;canvas.getContext('2d').drawImage(img,0,0,w,h);const compressed=canvas.toDataURL('image/jpeg',0.55);document.getElementById('pf-imgurl').value=compressed;const pr=document.getElementById('pf-imgprev');pr.src=compressed;pr.style.display='block';};img.src=e.target.result;};r.readAsDataURL(f)}
 function saveProd(){
   const sku=document.getElementById('pf-sku').value.trim().toUpperCase();
   const name=document.getElementById('pf-name').value.trim();
-  const price=parseInt(document.getElementById('pf-price').value);
+  const price=parseInt(document.getElementById('pf-price').value)||0;
+  const costPrice=parseInt(document.getElementById('pf-cost').value)||0;
+  const stockVal=document.getElementById('pf-stock').value;
+  const stock=stockVal===''||stockVal===null?null:Math.max(0,parseInt(stockVal)||0);
   const cat=document.getElementById('pf-cat').value;
   const vendorId=document.getElementById('pf-vendor').value;
   const img=document.getElementById('pf-imgurl').value.trim();
@@ -1007,17 +1129,16 @@ function saveProd(){
   const soldout=document.getElementById('pf-soldout-toggle').classList.contains('on');
   if(!sku){showToast('El SKU no puede estar vacío',true);return}
   if(!name){showToast('Falta el nombre',true);return}
-  if(!price||price<=0){showToast('Precio inválido',true);return}
+  if(!price||price<=0){showToast('Precio de venta inválido',true);return}
   let prods=DB.get('products')||[];
-  // Check SKU uniqueness
   const skuExists=prods.some(p=>p.sku===sku&&p.id!==editProdId);
   if(skuExists){showToast('Ese SKU ya está en uso',true);return}
   if(editProdId){
     const i=prods.findIndex(x=>x.id===editProdId);
-    if(i>-1)prods[i]={...prods[i],sku,name,price,category:cat,vendorId,image:img,description:desc,soldout};
+    if(i>-1)prods[i]={...prods[i],sku,name,price,costPrice,stock,category:cat,vendorId,image:img,description:desc,soldout};
     editProdId='';
   }else{
-    prods.push({id:'p'+Date.now(),sku,name,price,category:cat,vendorId,image:img,description:desc,soldout});
+    prods.push({id:'p'+Date.now(),sku,name,price,costPrice,stock,category:cat,vendorId,image:img,description:desc,soldout});
   }
   DB.set('products',prods);renderProds();renderHeroStats();drawAProducts(document.getElementById('admin-content'));showToast('Producto guardado ✓');
 }
@@ -1039,9 +1160,13 @@ function drawAVendors(c){
     <div class="a-form-title">+ Añadir vendedor</div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Nombre del vendedor / tienda</label><input type="text" id="vf-name" class="form-input" placeholder="Ej: Tienda de Juan"/></div>
-      <div class="form-group"><label class="form-label">Teléfono / WhatsApp</label><input type="text" id="vf-phone" class="form-input" placeholder="8888-8888"/></div>
+      <div class="form-group"><label class="form-label">Teléfono</label><input type="text" id="vf-phone" class="form-input" placeholder="8888-8888"/></div>
     </div>
     <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">WhatsApp <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);font-size:10px">con código país (ej: 50688887777)</span></label>
+        <input type="text" id="vf-wa" class="form-input" placeholder="50688887777"/>
+      </div>
       <div class="form-group"><label class="form-label">Correo electrónico</label><input type="email" id="vf-email" class="form-input" placeholder="correo@ejemplo.com"/></div>
       <div class="form-group"><label class="form-label">Color identificador</label>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px" id="color-picker">
@@ -1058,7 +1183,7 @@ function drawAVendors(c){
         <div class="vendor-avatar" style="background:${v.color}22;color:${v.color}">${v.name.slice(0,2).toUpperCase()}</div>
         <div class="vendor-info">
           <div class="vendor-name">${v.name}</div>
-          <div class="vendor-meta">📞 ${v.phone||'—'} · ✉️ ${v.contact||'—'}</div>
+          <div class="vendor-meta">📞 ${v.phone||'—'} · ${v.whatsapp?`<a href="https://wa.me/${v.whatsapp}" target="_blank" style="color:#25d366">💬 ${v.whatsapp}</a>`:'Sin WA'} · ✉️ ${v.contact||'—'}</div>
           <div style="font-size:11px;color:var(--muted);margin-top:3px">${vProds[v.id]||0} producto${(vProds[v.id]||0)!==1?'s':''}</div>
         </div>
         <div class="vendor-stats-r">
@@ -1083,7 +1208,8 @@ function saveVendor(){
   const color=document.getElementById('vf-color').value||VCOLS[1];
   if(!name){showToast('Ingresa el nombre',true);return}
   const vendors=DB.get('vendors')||[];
-  vendors.push({id:'v_'+Date.now(),name,phone,contact:email,color});
+  const whatsapp=document.getElementById('vf-wa').value.trim().replace(/[^0-9]/g,'');
+  vendors.push({id:'v_'+Date.now(),name,phone,whatsapp,contact:email,color});
   DB.set('vendors',vendors);drawAVendors(document.getElementById('admin-content'));showToast('Vendedor añadido ✓');
 }
 function delVendor(id){
