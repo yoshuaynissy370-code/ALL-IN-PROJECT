@@ -1116,7 +1116,20 @@ function calcMargin(){
   }else{mb.style.display='none';}
 }
 function prvImg(){const u=document.getElementById('pf-imgurl').value,pr=document.getElementById('pf-imgprev');if(u){pr.src=u;pr.style.display='block'}else pr.style.display='none'}
-function upImg(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=new Image();img.onload=()=>{const MAX=420;let w=img.width,h=img.height;if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;canvas.getContext('2d').drawImage(img,0,0,w,h);let q=0.5,compressed=canvas.toDataURL('image/jpeg',q);while(compressed.length>120000&&q>0.28){q-=0.06;compressed=canvas.toDataURL('image/jpeg',q)}document.getElementById('pf-imgurl').value=compressed;const pr=document.getElementById('pf-imgprev');pr.src=compressed;pr.style.display='block';if(compressed.length>120000)showToast('Imagen muy pesada: mejor usa una URL (Imgur/GitHub) para no llenar la base de datos.',true)};img.src=e.target.result;};r.readAsDataURL(f)}
+function upImg(inp){
+  const f=inp.files[0];
+  if(!f)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    const pr=document.getElementById('pf-imgprev');
+    pr.src=e.target.result;
+    pr.style.display='block';
+    // No guardamos base64 en Firebase: solo usamos el archivo como vista previa local.
+    document.getElementById('pf-imgurl').value='';
+    showToast('Vista previa cargada. Para guardar, pega una URL de imagen (Imgur/GitHub/CDN).',true);
+  };
+  r.readAsDataURL(f);
+}
 function saveProd(){
   const sku=document.getElementById('pf-sku').value.trim().toUpperCase();
   const name=document.getElementById('pf-name').value.trim();
@@ -1132,6 +1145,14 @@ function saveProd(){
   if(!sku){showToast('El SKU no puede estar vacío',true);return}
   if(!name){showToast('Falta el nombre',true);return}
   if(!price||price<=0){showToast('Precio de venta inválido',true);return}
+  if(img.startsWith('data:image/')){
+    showToast('No guardes imágenes en base64. Sube a Imgur/GitHub y pega la URL directa.',true);
+    return;
+  }
+  if(img&&!(img.startsWith('http://')||img.startsWith('https://'))){
+    showToast('La imagen debe ser una URL válida (http/https).',true);
+    return;
+  }
   let prods=DB.get('products')||[];
   const skuExists=prods.some(p=>p.sku===sku&&p.id!==editProdId);
   if(skuExists){showToast('Ese SKU ya está en uso',true);return}
