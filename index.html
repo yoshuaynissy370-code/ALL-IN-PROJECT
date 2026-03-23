@@ -503,7 +503,7 @@ const DB = {
     this._ls_set(k,v);
     if(FB_READY&&window._fbDB){
       const {doc,setDoc}=window._fbLib;
-      setDoc(doc(window._fbDB,'store',k),{data:JSON.stringify(v)}).catch(()=>{});
+      setDoc(doc(window._fbDB,'store',k),{data:JSON.stringify(v)}).catch(err=>console.warn('Firestore sync ('+k+'):',err));
     }
   }
 };
@@ -882,6 +882,8 @@ function drawDashboard(c){
       if(p.costPrice)vendorProfit[p.vendorId].profit+=(p.price-p.costPrice)*i.qty;
     }
   }));
+  const vProds={};
+  prods.forEach(p=>{if(p.vendorId)vProds[p.vendorId]=(vProds[p.vendorId]||0)+1});
 
   // Sales per day (last N days)
   const dayMap={};
@@ -1114,7 +1116,7 @@ function calcMargin(){
   }else{mb.style.display='none';}
 }
 function prvImg(){const u=document.getElementById('pf-imgurl').value,pr=document.getElementById('pf-imgprev');if(u){pr.src=u;pr.style.display='block'}else pr.style.display='none'}
-function upImg(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=new Image();img.onload=()=>{const MAX=500;let w=img.width,h=img.height;if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;canvas.getContext('2d').drawImage(img,0,0,w,h);const compressed=canvas.toDataURL('image/jpeg',0.55);document.getElementById('pf-imgurl').value=compressed;const pr=document.getElementById('pf-imgprev');pr.src=compressed;pr.style.display='block';};img.src=e.target.result;};r.readAsDataURL(f)}
+function upImg(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=new Image();img.onload=()=>{const MAX=420;let w=img.width,h=img.height;if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;canvas.getContext('2d').drawImage(img,0,0,w,h);let q=0.5,compressed=canvas.toDataURL('image/jpeg',q);while(compressed.length>120000&&q>0.28){q-=0.06;compressed=canvas.toDataURL('image/jpeg',q)}document.getElementById('pf-imgurl').value=compressed;const pr=document.getElementById('pf-imgprev');pr.src=compressed;pr.style.display='block';if(compressed.length>120000)showToast('Imagen muy pesada: mejor usa una URL (Imgur/GitHub) para no llenar la base de datos.',true)};img.src=e.target.result;};r.readAsDataURL(f)}
 function saveProd(){
   const sku=document.getElementById('pf-sku').value.trim().toUpperCase();
   const name=document.getElementById('pf-name').value.trim();
@@ -1139,6 +1141,11 @@ function saveProd(){
     editProdId='';
   }else{
     prods.push({id:'p'+Date.now(),sku,name,price,costPrice,stock,category:cat,vendorId,image:img,description:desc,soldout});
+  }
+  const productsPayload=JSON.stringify(prods);
+  if(productsPayload.length>950000){
+    showToast('El catálogo supera ~1 MB (Firestore). Usa URLs de imagen en lugar de fotos embebidas, o borra productos/imágenes grandes.',true);
+    return;
   }
   DB.set('products',prods);renderProds();renderHeroStats();drawAProducts(document.getElementById('admin-content'));showToast('Producto guardado ✓');
 }
